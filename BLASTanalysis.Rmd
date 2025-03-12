@@ -1,0 +1,950 @@
+---
+title: "BLAST"
+author: "Charlotte Manvell"
+date: "2024-10-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Blasting
+```{r cars, message = FALSE, warning = FALSE}
+library(rBLAST)
+library(here)
+library(Biostrings)
+library(dplyr)
+library(ggplot2)
+library(readxl)
+library(stringr)
+library(ggsci)
+library(gtools)
+library(GenomicRanges)
+library(gread)
+library(ivs)
+library(cowplot)
+
+theme_char <- function(base_size = 11, base_family = ""){
+  theme_bw() %+replace%
+    theme(axis.text = element_text(color = "Black"),
+          panel.grid.minor = element_blank(),
+          panel.grid.major = element_blank(),
+          axis.line = element_line(),
+          panel.border = element_blank())
+}
+theme_set(theme_char())
+
+dss2df <- function(dss) data.frame(width=width(dss), seq=as.character(dss), names=names(dss))
+
+bartname <- read_excel(here("Bartonellanames.xlsx"))
+jama <- pal_npg("nrc")(10)
+
+plasmid <- c("NZ_CP042964.1BartonellakosoyipTLV-1", "BdurdeniiBAA1452-1", "2BglirisGCF_033318925.1", 
+             "NC_012847.1BartonellagrahamiipBGR3", "NZ_CP101113.1BartonellaharrusipBHa", 
+             "NZ_CP042965.1BartonellakrasnoviipOE11-1", "BsilvicolaATCC-BAA-1453-plasmid", 
+             "NC_010160.1BartonellatribocorumpBT01")
+```
+
+
+```{r pressure, echo=FALSE}
+bl <- blast(db = "/Users/charlottemanvell/MAG/ReferenceGenomes/BartonellaGenomes/db")
+bl
+```
+
+```{r}
+seq <- readDNAStringSet(here("D70-300bp.fa"), 
+                                    format = "fasta")
+seq
+seq.df <- dss2df(seq)
+```
+
+```{r}
+seq_D71 <- readDNAStringSet(here("D71-300bp.fa"), 
+                                    format = "fasta")
+seq_D71
+seq_D71.df <- dss2df(seq_D71)
+```
+
+```{r}
+seq_D62 <- readDNAStringSet(here("D62-1-assembly.fa"), 
+                                    format = "fasta")
+seq_D62
+seq_D62.df <- dss2df(seq_D62)
+```
+
+## D70-db
+
+```{r}
+cl_D70 <- predict(object = bl, type = "blastn",
+              newdata = seq)
+
+names(cl_D70)[names(cl_D70) == "qseqid"] <- "names"
+cl_D70 <- left_join(cl_D70, seq.df, by = "names")
+
+cl_D70unique <- cl_D70 %>% 
+  distinct(names, .keep_all = TRUE) %>% 
+  filter(length > 2000)
+
+names(cl_D70unique)[names(cl_D70unique) == "qseqid"] <- "names"
+cl_D70unique <- left_join(cl_D70unique, seq.df, by = "names")
+write.csv(cl_D70unique, here("bart_D70.csv"))
+```
+
+
+```{r}
+df_D70 <- cl_D70 %>% mutate(interval = iv(qstart, qend)) %>% 
+  filter(!(sseqid %in% plasmid))
+
+df_D70 <- df_D70 %>%
+  group_by(names, sseqid) %>%
+  mutate(interval_group = iv_identify_group(interval)) %>%
+  arrange(-length, -pident) %>% 
+  distinct(names, sseqid, interval_group, .keep_all = TRUE) %>% 
+  ungroup
+
+open_D70 <- df_D70 %>% select(-interval, -interval_group)
+
+D70_Ba <- df_D70 %>% filter(sseqid == "BalsaticaGCF_013388295.1") %>% 
+  select(-interval, -interval_group)
+```
+
+Longest 30
+```{r, fig.height = 10, fig.width = 6}
+a <- df_D70 %>% select(names, sseqid, width) %>% unique
+b <- df_D70 %>% group_by(names, sseqid) %>% 
+  summarize(sumlength = sum(length), error = sum(gapopen)+sum(mismatch)) %>% #calculate length of all contig alignments to each genome
+  left_join(a, by = c("names", "sseqid")) %>% 
+  mutate(ident = (sumlength-error)/width) #%>% 
+  
+c <- b %>% filter(sumlength > 1999 & ident > 0.5)
+  #filter(width %in% unique(df_D70$width)[1:30]) 
+  
+  
+
+
+D70heat <- dplyr::left_join(b, bartname, by = "sseqid") %>% filter(width %in% c$width) %>% 
+  mutate(qseqid = stringr::str_extract(names, "\\d+(?=_[a-zA-Z]+.+$)")) %>% group_by(names, sseqid) %>% 
+  slice(which.max(ident)) %>% ungroup() %>% 
+  tidyr::complete(name, qseqid) %>% 
+ggplot()+
+  geom_tile(aes(x = reorder(qseqid, -as.numeric(qseqid)), y = name, fill = ident))+
+  scale_fill_gradient(high = "white", low = "red", na.value = "black", limits = c(0,1))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "italic"),
+        axis.text.y = element_blank(),
+        plot.margin = margin(l = 25))+
+  coord_flip()+
+  labs(x = "Contig", y = "Bartonella genome", fill = "% identity", 
+       title = expression(italic("C. simplex1")))
+print(D70heat)
+ggsave(plot = last_plot(), here("graph", "D70-heatmap.png"), width = 6, height = 8)
+```
+
+```{r}
+a <- df_D70 %>% select(names, sseqid, width) %>% unique
+b <- df_D70 %>% group_by(names, sseqid) %>% 
+  summarize(sumlength = sum(length), error = sum(gapopen)+sum(mismatch)) %>% 
+  left_join(a, by = c("names", "sseqid")) %>% 
+  mutate(ident = (sumlength-error)/width)
+  #%>% 
+  #filter(names %in% unique(df_D71$names)[1:30])
+
+c <- b %>% filter(sumlength > 1999 & ident > 0.5)
+
+
+dplyr::left_join(b, bartname, by = "sseqid") %>% filter(names %in% c$names) %>% 
+  mutate(ident = (sumlength-error)/width) %>% 
+  mutate(qseqid = stringr::str_extract(names, "\\d+(?=_[a-zA-Z]+.+$)")) %>% 
+  mutate(names = as.character(names)) %>% 
+  group_by(names, sseqid) %>% 
+  slice(which.max(ident)) %>% 
+  ungroup() %>% 
+  #tidyr::complete(name, width) %>% mutate(error = ifelse(is.na(error), width, error)) %>% 
+  group_by(name) %>% 
+  summarize(sumerror = sum(error),
+            sumwidth = sum(width),
+            sumident = 1 - sum(error)/sum(width),
+            contigs = n())
+print(paste0("of ", length(unique(c$names)), " contigs"))
+```
+
+Contig with > 2000 aligned not found in reference genome
+```{r}
+a <- df_D70 %>% select(names, sseqid, width) %>% unique
+b <- df_D70 %>% group_by(names, sseqid) %>% 
+  summarize(sumlength = sum(length), error = sum(gapopen)+sum(mismatch)) %>% #calculate length of all contig alignments to each genome
+  left_join(a, by = c("names", "sseqid")) %>% 
+  mutate(ident = (sumlength-error)/width) #%>% 
+  
+c <- b %>% filter(sumlength > 1999 & ident > 0.5)
+
+x <- dplyr::left_join(b, bartname, by = "sseqid") %>% filter(names %in% c$names) %>% 
+  mutate(ident = (sumlength-error)/width) %>% 
+  #mutate(qseqid = stringr::str_extract(names, "\\d+(?=_[a-zA-Z]+.+$)")) %>% 
+  group_by(names, sseqid) %>% 
+  slice(which.max(ident)) %>% ungroup() %>% 
+  tidyr::complete(names, name) %>% 
+  filter(name == "B. alsatica" & is.na(ident))
+
+y <- dplyr::left_join(b, bartname, by = "sseqid") %>% filter(names %in% c$names) %>% 
+  mutate(ident = (sumlength-error)/width) %>% 
+  #mutate(qseqid = stringr::str_extract(names, "\\d+(?=_[a-zA-Z]+.+$)")) %>% 
+  group_by(names, sseqid) %>% 
+  slice(which.max(ident)) %>% ungroup() %>% 
+  tidyr::complete(names, name) %>% 
+  filter(name == "B. alsatica" & ident < 0.5)
+
+z <- bind_rows(x, y) # contigs not found in B. alsatica (or less than 50%)
+head(z)
+```
+
+Write FASTA file of D70 sequences that have at least 50% identity to one or more Bartonella species
+```{r}
+a <- df_D70 %>% select(names, sseqid, width) %>% unique
+b <- df_D70 %>% group_by(names, sseqid) %>% 
+  summarize(sumlength = sum(length), error = sum(gapopen)+sum(mismatch)) %>% 
+  left_join(a, by = c("names", "sseqid")) %>% 
+  mutate(ident = (sumlength-error)/width)
+  #%>% 
+  #filter(names %in% unique(df_D71$names)[1:30])
+
+c <- b %>% filter(sumlength > 1999 & ident > 0.5)
+
+bart_D70 <- seq[unique(c$names)]
+writeXStringSet(bart_D70, here("bart_D70_50ident.fa"))
+```
+
+## D71-db
+
+```{r}
+cl_D71 <- predict(object = bl, type = "blastn",
+              newdata = seq_D71)
+
+names(cl_D71)[names(cl_D71) == "qseqid"] <- "names"
+cl_D71 <- left_join(cl_D71, seq_D71.df, by = "names")
+
+cl_D71unique <- cl_D71 %>% 
+  distinct(names, .keep_all = TRUE) %>% 
+  filter(length > 300)
+
+names(cl_D71unique)[names(cl_D71unique) == "qseqid"] <- "names"
+cl_D71unique <- left_join(cl_D71unique, seq_D71.df, by = "names")
+write.csv(cl_D71unique, here("bart_D71.csv"))
+```
+
+```{r}
+dplyr::left_join(cl_D71unique, bartname, by = "sseqid") %>% filter(length > 500) %>% 
+ggplot(aes(x = length, y = pident, color = name))+
+  geom_point(alpha = 0.7)+
+  facet_wrap(~name)+
+  theme(legend.position = "none")+
+  geom_vline(xintercept = 1000, color = "red", linetype = "dashed")+
+  geom_hline(yintercept = 90, color = "red", linetype = "dashed")+
+  guides(color = guide_legend(ncol = 2))+
+  labs(color = "Bartonella species")
+ggsave(plot = last_plot(), here("graph", "D71-contigs-facet.png"))
+```
+
+```{r}
+df_D71 <- cl_D71 %>% mutate(interval = iv(qstart, qend) )%>% 
+  filter(!(sseqid %in% plasmid))
+
+df_D71 <- df_D71 %>%
+  group_by(names, sseqid) %>%
+  mutate(interval_group = iv_identify_group(interval)) %>%
+  arrange(-length, -pident) %>% 
+  distinct(names, sseqid, interval_group, .keep_all = TRUE) %>% 
+  ungroup
+
+D71_Ba <- df_D71 %>% filter(sseqid == "BalsaticaGCF_013388295.1") %>% 
+  select(-interval, -interval_group)
+```
+
+```{r}
+a <- df_D71 %>% select(names, sseqid, width) %>% unique
+b <- df_D71 %>% group_by(names, sseqid) %>% 
+  summarize(sumlength = sum(length), error = sum(gapopen)+sum(mismatch)) %>% 
+  left_join(a, by = c("names", "sseqid")) %>% 
+  mutate(ident = (sumlength-error)/width)
+  #%>% 
+  #filter(names %in% unique(df_D71$names)[1:30])
+
+c <- b %>% filter(sumlength > 1999 & ident > 0.5)
+
+bart_D71 <- seq_D71[unique(c$names)]
+writeXStringSet(bart_D71, here("bart_D71_50ident.fa"))
+```
+
+```{r, fig.height = 5, fig.width = 6}
+a <- df_D71 %>% select(names, sseqid, width) %>% unique
+b <- df_D71 %>% group_by(names, sseqid) %>% 
+  summarize(sumlength = sum(length), error = sum(gapopen)+sum(mismatch)) %>% #calculate length of all contig alignments to each genome
+  left_join(a, by = c("names", "sseqid")) %>% 
+  mutate(ident = (sumlength-error)/width) #%>% 
+  
+c <- b %>% filter(sumlength > 1999 & ident > 0.5)
+  #filter(width %in% unique(df_D70$width)[1:30]) 
+
+D71heat <- dplyr::left_join(b, bartname, by = "sseqid") %>% filter(width %in% c$width) %>% 
+  mutate(qseqid = stringr::str_extract(names, "\\d+(?=_[a-zA-Z]+.+$)")) %>% group_by(names, sseqid) %>% 
+  slice(which.max(ident)) %>% ungroup() %>% 
+  tidyr::complete(name, qseqid) %>% 
+ggplot()+
+  geom_tile(aes(x = reorder(qseqid, -as.numeric(qseqid)), y = name, fill = ident))+
+  scale_fill_gradient(high = "white", low = "red", na.value = "black", limits = c(0,1))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "italic"),
+        axis.text.y = element_blank(),
+        plot.margin = margin(l = 25))+
+  coord_flip()+
+  labs(x = "Contig", y = "Bartonella genome", fill = "% identity", 
+       title = expression(italic("C. simplex2")))
+print(D71heat)
+ggsave(plot = last_plot(), here("graph", "D71-heatmap.png"), width = 6, height = 4)
+```
+
+```{r}
+a <- df_D71 %>% select(names, sseqid, width) %>% unique
+b <- df_D71 %>% group_by(names, sseqid) %>% 
+  summarize(sumlength = sum(length), error = sum(gapopen)+sum(mismatch)) %>% 
+  left_join(a, by = c("names", "sseqid")) %>% 
+  mutate(ident = (sumlength-error)/width)
+  #%>% 
+  #filter(names %in% unique(df_D71$names)[1:30])
+
+c <- b %>% filter(sumlength > 1999 & ident > 0.5)
+
+
+dplyr::left_join(b, bartname, by = "sseqid") %>% filter(width %in% c$width) %>% 
+  mutate(ident = (sumlength-error)/width) %>% 
+  mutate(qseqid = stringr::str_extract(names, "\\d+(?=_[a-zA-Z]+.+$)")) %>% 
+  mutate(names = as.character(names)) %>% 
+  group_by(names, sseqid) %>% 
+  slice(which.max(ident)) %>% 
+  ungroup() %>% 
+  #tidyr::complete(name, width) %>% mutate(error = ifelse(is.na(error), width, error)) %>% 
+  group_by(name) %>% 
+  summarize(sumerror = sum(error),
+            sumwidth = sum(width),
+            sumident = 1 - sum(error)/sum(width),
+            contigs = n())
+print(paste0("of ", length(unique(c$names)), " contigs"))
+```
+
+Contig with > 2000 aligned not found in reference genome
+```{r}
+a <- df_D71 %>% select(names, sseqid, width) %>% unique
+b <- df_D71 %>% group_by(names, sseqid) %>% 
+  summarize(sumlength = sum(length), error = sum(gapopen)+sum(mismatch)) %>% #calculate length of all contig alignments to each genome
+  left_join(a, by = c("names", "sseqid")) %>% 
+  mutate(ident = (sumlength-error)/width) #%>% 
+  
+c <- b %>% filter(sumlength > 1999 & ident > 0.5)
+
+x <- dplyr::left_join(b, bartname, by = "sseqid") %>% filter(names %in% c$names) %>% 
+  mutate(ident = (sumlength-error)/width) %>% 
+  #mutate(qseqid = stringr::str_extract(names, "\\d+(?=_[a-zA-Z]+.+$)")) %>% 
+  group_by(names, sseqid) %>% 
+  slice(which.max(ident)) %>% ungroup() %>% 
+  tidyr::complete(names, name) %>% 
+  filter(name == "B. alsatica" & is.na(ident))
+
+y <- dplyr::left_join(b, bartname, by = "sseqid") %>% filter(names %in% c$names) %>% 
+  mutate(ident = (sumlength-error)/width) %>% 
+  #mutate(qseqid = stringr::str_extract(names, "\\d+(?=_[a-zA-Z]+.+$)")) %>% 
+  group_by(names, sseqid) %>% 
+  slice(which.max(ident)) %>% ungroup() %>% 
+  tidyr::complete(names, name) %>% 
+  filter(name == "B. alsatica" & ident < 0.5)
+
+z <- bind_rows(x, y) # contigs not found in B. alsatica (or less than 50%)
+head(z)
+```
+
+## D62-db
+
+```{r}
+cl_D62 <- predict(object = bl, type = "blastn",
+              newdata = seq_D62)
+
+names(cl_D62)[names(cl_D62) == "qseqid"] <- "names"
+cl_D62 <- left_join(cl_D62, seq_D62.df, by = "names")
+
+cl_D62unique <- cl_D62 %>% 
+  distinct(names, .keep_all = TRUE) %>% 
+  filter(length > 300)
+
+names(cl_D62unique)[names(cl_D62unique) == "qseqid"] <- "names"
+cl_D62unique <- left_join(cl_D62unique, seq_D62.df, by = "names")
+write.csv(cl_D62unique, here("bart_D62.csv"))
+```
+
+```{r}
+plasmid <- c("NZ_CP042964.1BartonellakosoyipTLV-1", "BdurdeniiBAA1452-1", "2BglirisGCF_033318925.1", 
+             "NC_012847.1BartonellagrahamiipBGR3", "NZ_CP101113.1BartonellaharrusipBHa", 
+             "NZ_CP042965.1BartonellakrasnoviipOE11-1", "BsilvicolaATCC-BAA-1453-plasmid", 
+             "NC_010160.1BartonellatribocorumpBT01")
+
+df_D62 <- cl_D62 %>% mutate(interval = iv(qstart, qend)) %>% 
+filter(!(sseqid %in% plasmid))
+
+df_D62 <- df_D62 %>%
+  group_by(names, sseqid) %>%
+  mutate(interval_group = iv_identify_group(interval)) %>%
+  arrange(-length, -pident) %>% 
+  distinct(names, sseqid, interval_group, .keep_all = TRUE) %>% 
+  ungroup
+```
+
+```{r}
+a <- df_D62 %>% select(names, sseqid, width) %>% unique
+b <- df_D62 %>% group_by(names, sseqid) %>% 
+  summarize(sumlength = sum(length), error = sum(gapopen)+sum(mismatch)) %>% 
+  left_join(a, by = c("names", "sseqid")) %>% 
+  mutate(ident = (sumlength-error)/width)
+  #%>% 
+  #filter(names %in% unique(df_D71$names)[1:30])
+
+c <- b %>% filter(sumlength > 1999 & ident > 0.5)
+
+bart_D62 <- seq_D62[unique(c$names)]
+writeXStringSet(bart_D62, here("bart_D62_50ident.fa"))
+```
+
+```{r, fig.height = 10, fig.width = 6}
+a <- df_D62 %>% select(names, sseqid, width) %>% unique
+b <- df_D62 %>% group_by(names, sseqid) %>% 
+  summarize(sumlength = sum(length), error = sum(gapopen)+sum(mismatch)) %>% #calculate length of all contig alignments to each genome
+  left_join(a, by = c("names", "sseqid")) %>% 
+  mutate(ident = (sumlength-error)/width) #%>% 
+  
+c <- b %>% filter(sumlength > 1999 & ident > 0.5)
+  #filter(width %in% unique(df_D70$width)[1:30]) 
+  
+
+
+D62heat <- dplyr::left_join(b, bartname, by = "sseqid") %>% filter(width %in% c$width) %>% 
+  mutate(qseqid = stringr::str_extract(names, "\\d+(?=_[a-zA-Z]+.+$)")) %>% group_by(names, sseqid) %>% 
+  slice(which.max(ident)) %>% ungroup() %>% 
+  tidyr::complete(name, qseqid) %>% 
+ggplot()+
+  geom_tile(aes(x = reorder(qseqid, -as.numeric(qseqid)), y = name, fill = ident))+
+  scale_fill_gradient(high = "white", low = "red", na.value = "black", limits = c(0,1))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, face = "italic"),
+        axis.text.y = element_blank(),
+        plot.margin = margin(l = 25))+
+  coord_flip()+
+  labs(x = "Contig", y = "Bartonella genome", fill = "% identity", 
+       title = expression(italic("O. howardi")))
+print(D62heat)
+ggsave(plot = last_plot(), here("graph", "D62-heatmap.png"), width = 6, height = 8)
+```
+
+```{r}
+a <- df_D62 %>% select(names, sseqid, width) %>% unique
+b <- df_D62 %>% group_by(names, sseqid) %>% 
+  summarize(sumlength = sum(length), error = sum(gapopen)+sum(mismatch)) %>% 
+  left_join(a, by = c("names", "sseqid")) %>% 
+  mutate(ident = (sumlength-error)/width)
+  #%>% 
+  #filter(names %in% unique(df_D71$names)[1:30])
+
+c <- b %>% filter(sumlength > 1999 & ident > 0.5)
+
+
+dplyr::left_join(b, bartname, by = "sseqid") %>% filter(names %in% c$names) %>% 
+  mutate(ident = (sumlength-error)/width) %>% 
+  mutate(qseqid = stringr::str_extract(names, "\\d+(?=_[a-zA-Z]+.+$)")) %>% 
+  mutate(names = as.character(names)) %>% 
+  group_by(names, sseqid) %>% 
+  slice(which.max(ident)) %>% 
+  ungroup() %>% 
+  #tidyr::complete(name, width) %>% mutate(error = ifelse(is.na(error), width, error)) %>% 
+  group_by(name) %>% 
+  summarize(sumerror = sum(error),
+            sumwidth = sum(width),
+            sumident = 1 - sum(error)/sum(width),
+            contigs = n())
+print(paste0("of ", length(unique(c$names)), " contigs"))
+```
+
+Contig with > 2000 aligned not found in reference genome
+```{r}
+a <- df_D62 %>% select(names, sseqid, width) %>% unique
+b <- df_D62 %>% group_by(names, sseqid) %>% 
+  summarize(sumlength = sum(length), error = sum(gapopen)+sum(mismatch)) %>% #calculate length of all contig alignments to each genome
+  left_join(a, by = c("names", "sseqid")) %>% 
+  mutate(ident = (sumlength-error)/width) #%>% 
+  
+c <- b %>% filter(sumlength > 1999 & ident > 0.5)
+
+x <- dplyr::left_join(b, bartname, by = "sseqid") %>% filter(names %in% c$names) %>% 
+  mutate(ident = (sumlength-error)/width) %>% 
+  #mutate(qseqid = stringr::str_extract(names, "\\d+(?=_[a-zA-Z]+.+$)")) %>% 
+  group_by(names, sseqid) %>% 
+  slice(which.max(ident)) %>% ungroup() %>% 
+  tidyr::complete(names, name) %>% 
+  filter(name == "B. durdenii" & is.na(ident))
+
+y <- dplyr::left_join(b, bartname, by = "sseqid") %>% filter(names %in% c$names) %>% 
+  mutate(ident = (sumlength-error)/width) %>% 
+  #mutate(qseqid = stringr::str_extract(names, "\\d+(?=_[a-zA-Z]+.+$)")) %>% 
+  group_by(names, sseqid) %>% 
+  slice(which.max(ident)) %>% ungroup() %>% 
+  tidyr::complete(names, name) %>% 
+  filter(name == "B. durdenii" & ident < 0.5)
+
+z <- bind_rows(x, y) # contigs not found in B. alsatica (or less than 50%)
+head(z)
+```
+
+```{r}
+dplyr::left_join(cl_D62unique, bartname, by = "sseqid") %>% 
+ggplot(aes(x = length, y = pident, color = name))+
+  geom_point(alpha = 0.7)+
+  #facet_wrap(~name)+
+  #theme(legend.position = "none")+
+  geom_vline(xintercept = 1000, color = "red", linetype = "dashed")+
+  geom_hline(yintercept = 90, color = "red", linetype = "dashed")+
+  guides(color = guide_legend(ncol = 2))+
+  labs(color = "Bartonella species")
+ggsave(plot = last_plot(), here("graph", "D62-contigs.png"))
+```
+
+```{r}
+dplyr::left_join(cl_D62unique, bartname, by = "sseqid") %>% 
+ggplot(aes(x = length, y = pident, color = name))+
+  geom_point(alpha = 0.7)+
+  facet_wrap(~name)+
+  theme(legend.position = "none")+
+  geom_vline(xintercept = 1000, color = "red", linetype = "dashed")
+```
+
+
+## D70 ref genes
+```{r}
+D70_bl <- blast(db = "/Users/charlottemanvell/MAG/kBase/Blast/D70-db/db")
+D70_bl
+```
+
+```{r}
+Balsatica_ref <- readDNAStringSet(here("Balsatica-Ref.fa"), 
+                                    format = "fasta")
+Balsatica_ref
+Balsatica_ref.df <- dss2df(Balsatica_ref)
+```
+
+```{r}
+D70_ref <- predict(object = D70_bl, type = "blastn",
+              newdata = Balsatica_ref)
+#D70_ref$seq <- Balsatica_ref[1]
+D70_ref$gene <- D70_ref$qseqid 
+D70_ref <- as.data.frame(D70_ref)
+
+D70_ref <- D70_ref %>% filter(length > 100)
+```
+
+```{r}
+D70_ref_best <- D70_ref %>% filter(length > 1000 | 
+                                     gene == "16S" & length > 745 | 
+                                     gene == "ssrA" & length > 179 |
+                                     gene == "Pap31" & length > 415 | 
+                                     gene == "ftsZ" & length > 400 | 
+                                     gene == "gltA" & length > 648 |
+                                     gene == "ssrAD70-3" & length > 100 |
+                                     gene == "ssrAD71-1" & length > 100 |
+                                     gene == "ITSD70-3" & length > 200 |
+                                     gene == "ITSD71-1" & length > 200|
+                                     gene == "ITS" & length > 200)
+D70_ref_bestseq <- seq[unique(D70_ref$sseqid)]
+writeXStringSet(D70_ref_bestseq, here("D70_refgenes.fa"))
+```
+
+## D71 ref gene
+```{r}
+D71_bl <- blast(db = "/Users/charlottemanvell/MAG/kBase/Blast/D71-db/db")
+D71_bl
+```
+
+```{r}
+D71_ref <- predict(object = D71_bl, type = "blastn",
+              newdata = Balsatica_ref)
+#D71_ref$seq <- Balsatica_ref[1]
+D71_ref$gene <- D71_ref$qseqid
+D71_ref <- as.data.frame(D71_ref)
+
+
+D71_ref <- D71_ref %>% filter(length > 100) %>% filter(pident > 85)
+```
+
+```{r}
+D71_ref_best <- D71_ref %>% filter(length > 1000 | 
+                                     gene == "16S" & length > 745 | 
+                                     gene == "ssrA" & length > 179 |
+                                     gene == "Pap31" & length > 415 | 
+                                     gene == "ftsZ" & length > 400 | 
+                                     gene == "gltA" & length > 648 |
+                                     gene == "ssrAD70-3" & length > 100 |
+                                     gene == "ssrAD71-1" & length > 100 |
+                                     gene == "ITSD70-3" & length > 200 |
+                                     gene == "ITSD71-1" & length > 200 |
+                                     gene == "ITS" & length > 200)
+D71_ref_bestseq <- seq_D71[unique(D71_ref$sseqid)]
+writeXStringSet(D71_ref_bestseq, here("D71_refgenes.fa"))
+```
+
+## D62 ref genes
+```{r}
+D62_bl <- blast(db = "/Users/charlottemanvell/MAG/kBase/Blast/D62-db/db")
+D62_bl
+```
+
+```{r}
+Bsilvicola <- readDNAStringSet(here("Bsilvicola.fa"), 
+                                    format = "fasta")
+Bsilvicola
+Bsilvicola.df <- dss2df(Bsilvicola)
+Bsilvicola.df$gene <- gsub( " .*$", "", Bsilvicola.df$names)
+
+Bdurdenii <- readDNAStringSet(here("Bdurdenii.fa"), 
+                                    format = "fasta")
+Bdurdenii
+Bdurdenii.df <- dss2df(Bdurdenii)
+Bdurdenii.df$gene <- gsub( " .*$", "", Bdurdenii.df$names)
+```
+
+```{r}
+D62_ref_silvicola <- predict(object = D62_bl, type = "blastn",
+              newdata = Bsilvicola)
+#D62_ref$seq <- Bsilvicola[1]
+D62_ref_silvicola <- as.data.frame(D62_ref_silvicola)
+
+D62_ref_silvicola$gene <- D62_ref_silvicola$qseqid
+
+D62_ref_silvicola <- D62_ref_silvicola %>% filter(length > 100)
+```
+
+```{r}
+D62_ref_durdenii <- predict(object = D62_bl, type = "blastn",
+              newdata = Bdurdenii)
+#D62_ref$seq <- Bsilvicola[1]
+D62_ref_durdenii$gene <- sub(" .*", "", names(Bdurdenii)[1]) 
+D62_ref_durdenii <- as.data.frame(D62_ref_durdenii)
+
+D62_ref_durdenii$gene <- D62_ref_durdenii$qseqid
+
+D62_ref_durdenii <- D62_ref_durdenii %>% filter(length > 100)
+```
+
+```{r}
+D62_refseq <- seq_D62[unique(D62_ref_silvicola$sseqid), unique(D62_ref_durdenii)]
+writeXStringSet(D62_refseq, here("D62_refgenes.fa"))
+```
+
+```{r}
+z <- data.frame(gene = setdiff(Bsilvicola.df$gene, D62_ref_silvicola$gene), 
+                pident = c(rep(0, length(setdiff(Bsilvicola.df$gene, D62_ref_silvicola$gene)))))
+
+x <- D62_ref_silvicola %>% smartbind(z) %>% 
+    left_join(select(Bsilvicola.df, width, gene), by = "gene") %>% 
+                          mutate(Species = case_when(
+                                     gene == "ITSD62-1" ~ "Our PCR",
+                                      gene == "ssrAD62-1" ~ "Our PCR",
+                                       .default = "B. silvicola"
+                                     )) %>% mutate(gene = case_when(
+                                     gene == "ITSD62-1" ~ "ITS",
+                                      gene == "ssrAD62-1" ~ "ssrA",
+                                       .default = gene
+                                     ))
+  
+z <- data.frame(gene = setdiff(Bdurdenii.df$gene, D62_ref_durdenii$gene), 
+                pident = c(rep(0, length(setdiff(Bdurdenii.df$gene, D62_ref_durdenii$gene)))))
+y <- D62_ref_durdenii %>% mutate(Species = "B. durdenii")  %>% smartbind(z) %>% 
+    left_join(select(Bdurdenii.df, width, gene), by = "gene")
+
+bind_rows(x, y) %>% mutate(Coverage = length/width) %>% 
+  filter(!(gene %in% c("ITS(16S-23S)", "16S", "23S")) | 
+                            # gene == "ITS(16S-23S)" & pident > 90 | 
+                             gene == "23S" & pident > 90 | 
+                             gene == "16S" & pident > 90) %>% 
+  mutate(gene = if_else(gene == "ITS(16S23S)", "ITS", gene)) %>% 
+  ggplot()+
+  geom_col(aes(x = gene, y = Coverage, fill = gene), color = "black",
+           position = position_dodge2(preserve = "single"))+
+  #geom_hline(yintercept = 0.7, linetype = "dashed", color = "red")+
+  geom_hline(yintercept = 1, linetype = "dashed", color = "black")+
+  facet_grid(.~Species, space = "free_x", scales = "free_x")+
+  scale_y_continuous(expand = c(0,0),
+                     labels = scales::percent,
+                     breaks = c(0, .25, .5, .75, 1),
+                     limits = c(0, 1.02))+
+  theme(strip.background = element_blank(),
+        strip.placement = "outside",
+        strip.text = element_text(size = 12),
+        legend.position = "none")+
+  scale_fill_npg()+
+  #scale_fill_manual(values = c(jama))+
+  labs(y = "Coverage (% of non-N bases)")
+ggsave(here("graph", "D62coverage.png"), plot = last_plot(), device = "png", units = "in", width = 8, height = 4)
+
+f <- bind_rows(x, y) %>% mutate(Coverage = length/width) %>% 
+  filter(!(gene %in% c("ITS(16S-23S)", "16S", "23S")) | 
+                            # gene == "ITS(16S-23S)" & pident > 90 | 
+                             gene == "23S" & pident > 90 | 
+                             gene == "16S" & pident > 90) %>% 
+  mutate(gene = if_else(gene == "ITS(16S23S)", "ITS", gene),
+         Coverage = paste0(round(Coverage*100, 2), "% (",
+                          length, "/", width, ")"),
+         Alignment = paste0(round(((length-(mismatch+gapopen))/width)*100, 2), "% (",
+                           (length-(mismatch+gapopen)), "/", width, ")"),
+         AlignCov = paste0(round(((length-(mismatch+gapopen))/length)*100, 2), "% (",
+                           (length-(mismatch+gapopen)), "/", length, ")")) %>% 
+  distinct(Species, gene, .keep_all = TRUE) %>%
+  select(Species, gene, Coverage, Alignment, AlignCov) %>% arrange(Species, gene)
+write.csv(f, here("Table", "D62covalign.csv"))
+```
+
+
+```{r}
+x <- D62_ref_silvicola %>% left_join(select(Bsilvicola.df, width, gene), by = "gene") %>% 
+  mutate(Species = case_when(
+                                     gene == "ITSD62-1" ~ "Our PCR",
+                                      gene == "ssrAD62-1" ~ "Our PCR",
+                                       .default = "B. silvicola"
+                                     )) %>% mutate(gene = case_when(
+                                     gene == "ITSD62-1" ~ "ITS",
+                                      gene == "ssrAD62-1" ~ "ssrA",
+                                       .default = gene
+                                     ))
+  
+y <- D62_ref_durdenii %>% mutate(Species = "B. durdenii") %>% 
+  left_join(select(Bdurdenii.df, width, gene), by = "gene")
+align.ref <- bind_rows(x, y) %>% filter(!(gene %in% c("ITS(16S23S)", "16S", "23S", "rpoB")) | 
+                             gene == "ITS(16S23S)" & pident > 90 & length > 500 | 
+                             gene == "23S" & pident > 90 | 
+                             gene == "16S" & pident > 90|
+                             gene == "rpoB" & length > 1000)
+align <- data.frame(Gene = c(align.ref$gene, align.ref$gene),
+                    align = c(((align.ref$width-align.ref$length)/align.ref$width), 
+                              (align.ref$length - 
+                                   (align.ref$mismatch + align.ref$gapopen))/align.ref$width),
+                    type = c(rep("Ns", nrow(align.ref)), 
+                             rep("Aligns", nrow(align.ref))),
+                    Species = c(align.ref$Species, align.ref$Species)) 
+# create align.ref so I can make one with Ns
+
+
+align %>% dplyr::mutate(type = factor(type, levels = c("Ns", "Aligns"))) %>% 
+  filter(Species != "Our PCR") %>% 
+  ggplot()+
+  geom_col(aes(x = Gene, y = align, fill = Gene, alpha = type),
+           color = "black", width = 0.3,
+           position = position_stack())+
+  geom_hline(yintercept = 0.99, linetype = "dashed", color = "red")+
+  scale_alpha_discrete(range = c(0.2, 0.9))+
+  facet_grid(.~Species, scales = "free_x", space = "free_x")+
+  #coord_cartesian(ylim = c(0.65, 1))+
+  scale_y_continuous(expand = c(0,0), breaks = seq(0, 1, 0.2), labels = scales::percent, limits = c(0, 1))+
+  theme(strip.background = element_blank(),
+      #legend.position = "none",
+       strip.text = element_text(size = 12, face = "italic"),
+      axis.text.x = element_text(angle = 45, hjust =1))+
+  scale_fill_npg()+
+  #scale_fill_manual(values = c(jama[3:4], jama[6:7], jama[9]))+
+  labs(y = "% alignment", alpha = "Coverage")
+ggsave(here("graph", "D62-refgene.png"), plot = last_plot(), device = "png", units = "in", 
+       width = 7, height = 4)
+```
+
+```{r}
+x <- D62_ref_silvicola %>% left_join(select(Bsilvicola.df, width, gene), by = "gene") %>% 
+  mutate(Species = case_when(
+                                     gene == "ITSD62-1" ~ "Our PCR",
+                                      gene == "ssrAD62-1" ~ "Our PCR",
+                                       .default = "B. silvicola"
+                                     )) %>% mutate(gene = case_when(
+                                     gene == "ITSD62-1" ~ "ITS",
+                                      gene == "ssrAD62-1" ~ "ssrA",
+                                       .default = gene
+                                     ))
+  
+y <- D62_ref_durdenii %>% mutate(Species = "B. durdenii") %>% 
+  left_join(select(Bdurdenii.df, width, gene), by = "gene")
+align.ref <- bind_rows(x, y) %>% filter(!(gene %in% c("ITS(16S23S)", "16S", "23S", "rpoB")) | 
+                             gene == "ITS(16S23S)" & pident > 90 & length > 500 | 
+                             gene == "23S" & pident > 90 | 
+                             gene == "16S" & pident > 90|
+                             gene == "rpoB" & length > 1000)
+
+D62ref <- bind_rows(x, y) %>% filter(!(gene %in% c("ITS(16S23S)", "16S", "23S", "rpoB")) | 
+                             gene == "ITS(16S23S)" & pident > 90 & length > 500 | 
+                             gene == "23S" & pident > 90 | 
+                             gene == "16S" & pident > 90|
+                             gene == "rpoB" & length > 1000) %>% 
+  filter(length/width > 0.7) %>% 
+  mutate(Species = ifelse(Species == "Our PCR", "PCR", Species)) %>% 
+  ggplot()+
+  geom_col(aes(x = gene, y = pident, fill = gene),
+           color = "black", width = 0.3,
+           position = position_stack())+
+  geom_hline(yintercept = 99, linetype = "dashed", color = "red")+
+  facet_grid(.~Species, scales = "free_x", space = "free_x")+
+  coord_cartesian(ylim = c(80, 100))+
+  scale_y_continuous(expand = c(0,0), breaks = seq(65, 100, 5))+
+  theme(strip.background = element_blank(),
+      #legend.position = "none",
+       strip.text = element_text(size = 12, face = "italic"),
+      axis.text.x = element_text(angle = 45, hjust =1))+
+  scale_fill_npg()+
+  #scale_fill_manual(values = c(jama[3:4], jama[6:7], jama[9]))+
+  labs(y = "% alignment", fill = "Gene", x = "Gene", title = expression(italic("O. howardi")))
+print(D62ref)
+ggsave(here("graph", "D62-refgenenoN.png"), plot = last_plot(), device = "png", units = "in", 
+       width = 7.5, height = 4)
+```
+
+
+
+# Graphs
+
+```{r}
+Consensus <- read_excel("/Users/charlottemanvell/MAG/kBase/Balsaticaalignment/MarkerGene.xlsx", 
+                            sheet = "nodes") %>% filter(Group == "Consensus")
+```
+
+```{r}
+Consensus %>% ggplot()+
+  geom_col(aes(x = Gene, y = Coverage, fill = GeneName), color = "black",
+           position = position_dodge2(preserve = "single"),
+           width = 0.5)+
+  geom_hline(yintercept = 0.7, linetype = "dashed", color = "red")+
+  facet_grid(Sample~.)+
+  scale_y_continuous(expand = c(0,0),
+                     labels = scales::percent,
+                     breaks = c(0, .25, .5, .75, 1),
+                     limits = c(0, 1))+
+  theme(strip.background = element_blank(),
+        strip.text = element_text(size = 12),
+        legend.position = "none")+
+  scale_fill_manual(values = c(jama[1:7], jama[10]))+
+  labs(y = "Coverage (% of non-N bases)")
+ggsave(here("graph", "coverage.png"), plot = last_plot(), device = "png", units = "in", 
+       width = 9, height = 6)
+```
+
+```{r}
+align.ref <- Consensus %>% filter(Coverage > 0.70)
+align <- data.frame(Gene = c(align.ref$Gene, align.ref$Gene),
+                    GeneName = c(align.ref$GeneName, align.ref$GeneName),
+                    align = c(c(1 - align.ref$`%nonN`), align.ref$`Match/length`),
+                    type = c(rep("Ns", nrow(align.ref)), 
+                             rep("Aligns", nrow(align.ref))),
+                    Sample = c(align.ref$Sample, align.ref$Sample))
+
+align %>% dplyr::mutate(type = factor(type, levels = c("Ns", "Aligns"))) %>% 
+  filter(!(Gene %in% c("ssrAD70-3", "ssrAD71-1", "ITSD70-3", "ITSD71-1"))) %>% 
+  ggplot()+
+  geom_col(aes(x = Gene, y = align, fill = GeneName, alpha = type),
+           color = "black", width = 0.3,
+           position = position_stack())+
+  geom_hline(yintercept = 0.99, linetype = "dashed", color = "red")+
+  scale_alpha_discrete(range = c(0.2, 0.9))+
+  facet_grid(.~Sample, space = "free", scales = "free_x")+
+  #coord_cartesian(ylim = c(0.40, 1))+
+  scale_y_continuous(expand = c(0,0), breaks = seq(0, 1, 0.20), labels = scales::percent)+
+  theme(strip.background = element_blank(),
+      #legend.position = "none",
+       strip.text = element_text(size = 12),
+      axis.text.x = element_text(angle = 45, hjust = 1))+
+  scale_fill_manual(values = c(jama[2:4], jama[11], jama[8:9]))+
+  labs(y = "% alignment to B. alsatica")
+ggsave(here("graph", "Balsaticaalignment.png"), plot = last_plot(), device = "png", units = "in", 
+       width = 5, height = 4)
+```
+
+D70-3 refgene
+```{r}
+D70ref <- Consensus %>% filter(Coverage > 0.70) %>% filter(Sample == "D70-3") %>% 
+  mutate(Species = if_else(Gene %in% c("ssrAD70-3", "ssrAD71-1", "ITSD71-1", "ITSD70-3"), 
+                            "Our PCR", "B. alsatica")) %>% 
+  filter(Gene != "ssrAD71-1") %>% 
+  mutate(Gene = ifelse(Gene == "ssrAD70-3", "ssrA", Gene)) %>% 
+  mutate(Species = ifelse(Species == "Our PCR", "PCR", Species)) %>% 
+  ggplot()+
+  geom_col(aes(x = Gene, y = `% match`*100, fill = GeneName),
+           color = "black", width = 0.3,
+           position = position_stack())+
+  geom_hline(yintercept = 99, linetype = "dashed", color = "red")+
+  facet_grid(.~Species, space = "free", scales = "free_x", labeller = label_wrap_gen())+
+  coord_cartesian(ylim = c(80, 100))+
+  scale_y_continuous(expand = c(0,0), breaks = seq(80, 100, 5))+
+  theme(strip.background = element_blank(),
+      #legend.position = "none",
+       strip.text = element_text(size = 12, face = "italic"),
+      axis.text.x = element_text(angle = 45, hjust = 1))+
+  scale_fill_manual(values = c(jama[1:3], jama[11], jama[7:8], "black"))+
+  labs(y = "% alignment", title = expression(italic("C. simplex1")))
+print(D70ref)
+ggsave(here("graph", "D70refgene.png"), plot = last_plot(), device = "png", units = "in", 
+       width = 5, height = 4)
+```
+
+D71-1 ref gene
+```{r}
+D71ref <- Consensus %>% filter(Coverage > 0.70) %>% filter(Sample == "D71-1") %>% 
+  mutate(Species = if_else(Gene %in% c("ssrAD70-3", "ssrAD71-1", "ITSD71-1", "ITSD70-3"), 
+                            "Our PCR", "B. alsatica")) %>% 
+  filter(Gene != "ITSD70-3") %>% 
+  mutate(Gene = ifelse(Gene == "ITSD71-1", "ITS", Gene)) %>% 
+  mutate(Species = ifelse(Species == "Our PCR", "PCR", Species)) %>% 
+  #filter(!(Gene %in% c("ssrAD70-3", "ssrAD71-1", "ITSD70-3", "ITSD71-1"))) %>% 
+  ggplot()+
+  geom_col(aes(x = Gene, y = `% match`*100, fill = GeneName),
+           color = "black", width = 0.3,
+           position = position_stack())+
+  geom_hline(yintercept = 99, linetype = "dashed", color = "red")+
+  facet_grid(.~Species, space = "free", scales = "free_x", labeller = label_wrap_gen())+
+  coord_cartesian(ylim = c(80, 100))+
+  scale_y_continuous(expand = c(0,0), breaks = seq(80, 100, 5))+
+  theme(strip.background = element_blank(),
+      #legend.position = "none",
+       strip.text = element_text(size = 12, face = "italic"),
+      axis.text.x = element_text(angle = 45, hjust = 1))+
+  scale_fill_manual(values = c(jama[1], jama[5], jama[11]))+
+  labs(y = "% alignment", title = expression(italic("C. simplex2")))
+print(D71ref)
+ggsave(here("graph", "D71-1refgene.png"), plot = last_plot(), device = "png", units = "in", 
+       width = 4, height = 4)
+```
+
+```{r}
+d <- Consensus %>% 
+  mutate(Coverage = paste0(round(Coverage*100, 2), "% (",
+                          `# non-N`, "/", Genelength, ")"),
+         Alignment = paste0(round((Match/Genelength)*100, 2), "% (",
+                           Match, "/", Genelength, ")"),
+         AlignCov = paste0(round(`% match`*100, 2), "% (",
+                          Match, "/", `Query cover`, ")")) %>% 
+  select(Sample, Gene, Coverage, Alignment, AlignCov) %>% arrange(Sample, Gene)
+write.csv(d, here("Table", "Balsaticacoverage.csv"))
+```
+
+FIGURE
+```{r, fig.height = 12, fig.width = 15}
+plot_grid(D62heat, D70heat, D71heat, D62ref, D70ref, D71ref, ncol = 3,
+          align = "v", rel_heights = c(2, 1), rel_widths = c(1, 1, 1, 2, 1, 1),
+          labels = c("A", "", "", "B", "", "")) 
+```
+
+```{r, fig.height = 12, fig.width = 15}
+top_row <- plot_grid(D62heat, D70heat, D71heat, ncol = 3,
+          align = "vh",
+          labels = c("A", "", "")) 
+
+bottom_row <- plot_grid(D62ref, D70ref, D71ref, ncol = 3,
+          align = "vh", rel_widths = c(3, 2, 1.4),
+          labels = c("B", "", "")) 
+plot_grid(top_row, bottom_row, ncol = 1, rel_heights = c(2, 1))
+ggsave(here("graph", "fig6.png"), height = 12, width = 15, plot = last_plot(), device = "png", 
+       units = "in")
+```
+
