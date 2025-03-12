@@ -807,8 +807,7 @@ ggsave(here("graph", "D62-refgenenoN.png"), plot = last_plot(), device = "png", 
 # Graphs
 
 ```{r}
-Consensus <- read_excel("/Users/charlottemanvell/MAG/kBase/Balsaticaalignment/MarkerGene.xlsx", 
-                            sheet = "nodes") %>% filter(Group == "Consensus")
+Consensus <- read_excel(here("MarkerGene.xlsx"), sheet = "nodes") %>% filter(Group == "Consensus")
 ```
 
 ```{r}
